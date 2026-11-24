@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Inbox, Check, Trash2, ExternalLink, Loader2, ArrowUpDown, Search, X } from 'lucide-react'
+import { Inbox, Check, Trash2, ExternalLink, Loader2, ArrowUpDown, Search, X, Folder, ChevronDown } from 'lucide-react'
+import * as Select from '@radix-ui/react-select'
 import BookmarkCard from '@/components/bookmark-card'
-import type { BookmarkWithMedia, BookmarksResponse } from '@/lib/types'
+import type { BookmarkWithMedia, BookmarksResponse, Category } from '@/lib/types'
 
 const PAGE_SIZE = 20
 
@@ -94,7 +95,17 @@ export default function InboxPage() {
   const [sort, setSort] = useState<'oldest' | 'newest'>('oldest')
   const [searchInput, setSearchInput] = useState('')
   const [query, setQuery] = useState('')
+  const [category, setCategory] = useState('')
+  const [categories, setCategories] = useState<Category[]>([])
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Load the collection list for the filter dropdown
+  useEffect(() => {
+    fetch('/api/categories')
+      .then((r) => r.json())
+      .then((d: { categories?: Category[] }) => setCategories(d.categories ?? []))
+      .catch(() => {})
+  }, [])
 
   function updateSearch(q: string) {
     setSearchInput(q)
@@ -108,7 +119,12 @@ export default function InboxPage() {
     setQuery('')
   }
 
-  const fetchPage = useCallback(async (p: number, sortOrder: 'oldest' | 'newest', q: string) => {
+  function clearFilters() {
+    clearSearch()
+    setCategory('')
+  }
+
+  const fetchPage = useCallback(async (p: number, sortOrder: 'oldest' | 'newest', q: string, cat: string) => {
     const params = new URLSearchParams({
       triageState: 'inbox',
       sort: sortOrder,
@@ -116,6 +132,7 @@ export default function InboxPage() {
       limit: String(PAGE_SIZE),
     })
     if (q) params.set('q', q)
+    if (cat) params.set('category', cat)
     const res = await fetch(`/api/bookmarks?${params.toString()}`)
     if (!res.ok) throw new Error('Failed to fetch inbox')
     const data: BookmarksResponse = await res.json()
@@ -125,7 +142,7 @@ export default function InboxPage() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    fetchPage(1, sort, query)
+    fetchPage(1, sort, query, category)
       .then((data) => {
         if (cancelled) return
         setBookmarks(data.bookmarks)
@@ -144,7 +161,7 @@ export default function InboxPage() {
     return () => {
       cancelled = true
     }
-  }, [fetchPage, sort, query])
+  }, [fetchPage, sort, query, category])
 
   function handleDecided(id: string) {
     setBookmarks((prev) => prev.filter((b) => b.id !== id))
@@ -155,7 +172,7 @@ export default function InboxPage() {
     setLoadingMore(true)
     try {
       const next = page + 1
-      const data = await fetchPage(next, sort, query)
+      const data = await fetchPage(next, sort, query, category)
       // Guard against duplicates if items shifted after triage
       setBookmarks((prev) => {
         const seen = new Set(prev.map((b) => b.id))
@@ -171,6 +188,9 @@ export default function InboxPage() {
   }
 
   const hasMore = bookmarks.length < total
+  const activeCategory = categories.find((c) => c.slug === category) ?? null
+  const hasFilter = !!query || !!category
+  const controlsVisible = total > 0 || hasFilter
 
   return (
     <div className="flex flex-col h-full">
@@ -183,26 +203,16 @@ export default function InboxPage() {
             </div>
             <div className="min-w-0">
               <h1 className="text-base font-semibold text-zinc-100 leading-tight">Inbox</h1>
-              <p className="text-xs text-zinc-500">
+              <p className="text-xs text-zinc-500 truncate">
                 {loading
                   ? 'Loading…'
-                  : query
-                    ? `${total.toLocaleString()} match${total !== 1 ? 'es' : ''} for "${query}"`
+                  : hasFilter
+                    ? `${total.toLocaleString()} match${total !== 1 ? 'es' : ''}${activeCategory ? ` in ${activeCategory.name}` : ''}${query ? ` for "${query}"` : ''}`
                     : total > 0
                       ? `${total.toLocaleString()} to triage`
                       : 'Nothing to triage'}
               </p>
             </div>
-            {(total > 0 || query) && (
-              <button
-                onClick={() => setSort((s) => (s === 'oldest' ? 'newest' : 'oldest'))}
-                className="ml-auto flex items-center gap-2 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-sm text-zinc-400 hover:border-zinc-700 hover:text-zinc-200 transition-all shrink-0"
-                title={`Sort: ${sort === 'oldest' ? 'Oldest first' : 'Newest first'}`}
-              >
-                <ArrowUpDown size={13} />
-                <span className="hidden sm:inline">{sort === 'oldest' ? 'Oldest first' : 'Newest first'}</span>
-              </button>
-            )}
           </div>
 
           {/* Search */}
@@ -225,6 +235,62 @@ export default function InboxPage() {
               </button>
             )}
           </div>
+
+          {/* Controls: collection filter + sort */}
+          {controlsVisible && (
+            <div className="flex items-center gap-2 mt-3">
+              <Select.Root value={category || '_all'} onValueChange={(v) => setCategory(v === '_all' ? '' : v)}>
+                <Select.Trigger className="flex items-center gap-2 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-sm text-zinc-400 hover:border-zinc-700 hover:text-zinc-200 focus:outline-none focus:border-indigo-500 transition-all min-w-[150px]">
+                  <Folder size={13} className="shrink-0" style={activeCategory ? { color: activeCategory.color } : undefined} />
+                  <Select.Value placeholder="All collections" />
+                  <Select.Icon className="ml-auto">
+                    <ChevronDown size={12} className="text-zinc-600" />
+                  </Select.Icon>
+                </Select.Trigger>
+                <Select.Portal>
+                  <Select.Content className="z-50 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl shadow-black/50 overflow-hidden max-h-[320px]">
+                    <Select.Viewport className="p-1">
+                      <Select.Item
+                        value="_all"
+                        className="flex items-center px-3 py-2 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 rounded-lg cursor-pointer outline-none transition-colors data-[highlighted]:bg-zinc-800 data-[highlighted]:text-zinc-100"
+                      >
+                        <Select.ItemText>All collections</Select.ItemText>
+                      </Select.Item>
+                      {categories.map((cat) => (
+                        <Select.Item
+                          key={cat.slug}
+                          value={cat.slug}
+                          className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 rounded-lg cursor-pointer outline-none transition-colors data-[highlighted]:bg-zinc-800 data-[highlighted]:text-zinc-100"
+                        >
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
+                          <Select.ItemText>{cat.name}</Select.ItemText>
+                        </Select.Item>
+                      ))}
+                    </Select.Viewport>
+                  </Select.Content>
+                </Select.Portal>
+              </Select.Root>
+
+              {category && (
+                <button
+                  onClick={() => setCategory('')}
+                  className="flex items-center gap-1 px-2.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-xs text-indigo-300 hover:bg-indigo-500/20 transition-all shrink-0"
+                  title="Clear collection filter"
+                >
+                  <X size={11} />
+                </button>
+              )}
+
+              <button
+                onClick={() => setSort((s) => (s === 'oldest' ? 'newest' : 'oldest'))}
+                className="ml-auto flex items-center gap-2 px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-sm text-zinc-400 hover:border-zinc-700 hover:text-zinc-200 transition-all shrink-0"
+                title={`Sort: ${sort === 'oldest' ? 'Oldest first' : 'Newest first'}`}
+              >
+                <ArrowUpDown size={13} />
+                <span className="hidden sm:inline">{sort === 'oldest' ? 'Oldest first' : 'Newest first'}</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -239,20 +305,20 @@ export default function InboxPage() {
         {!loading && bookmarks.length === 0 && (
           <div className="flex flex-col items-center justify-center py-24 text-center">
             <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-5">
-              {query ? <Search size={26} className="text-zinc-700" /> : <Inbox size={26} className="text-zinc-700" />}
+              {hasFilter ? <Search size={26} className="text-zinc-700" /> : <Inbox size={26} className="text-zinc-700" />}
             </div>
-            {query ? (
+            {hasFilter ? (
               <>
                 <h3 className="text-base font-semibold text-zinc-400 mb-2">No matches</h3>
                 <p className="text-zinc-600 text-sm max-w-xs mb-5">
-                  No inbox bookmarks match &ldquo;{query}&rdquo;.
+                  No inbox bookmarks{activeCategory ? ` in ${activeCategory.name}` : ''}{query ? ` match “${query}”` : ''}.
                 </p>
                 <button
-                  onClick={clearSearch}
+                  onClick={clearFilters}
                   className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 rounded-xl transition-colors border border-zinc-800"
                 >
                   <X size={13} />
-                  Clear search
+                  Clear filters
                 </button>
               </>
             ) : (
